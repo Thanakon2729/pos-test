@@ -124,10 +124,11 @@
 
   <!-- สต็อก -->
   <section class="view" id="view-stock">
+    <button class="btn" id="add-prod" style="margin-bottom:12px">+ เพิ่มสินค้า</button>
     <input class="search" id="search-stock" type="search" placeholder="ค้นหาสินค้า…">
     <div class="list" id="stock-list"></div>
-    <p class="note">กด − / + เพื่อปรับทีละ 1 ชิ้น หรือกด “ปรับหลายชิ้น” เพื่อรับของเข้าหรือตัดของเสียทีละมาก ๆ
-      ทุกการปรับจะถูกบันทึกในชีต <b>StockLog</b> · เพิ่มสินค้าใหม่ หรือแก้ชื่อและราคาได้ที่ชีต <b>Products</b> โดยตรง แล้วกดปุ่มซิงก์</p>
+    <p class="note">กด − / + เพื่อปรับทีละ 1 ชิ้น หรือกด “ปรับหลายชิ้น” เพื่อรับของเข้าหรือตัดของเสียทีละมาก ๆ ·
+      กด “แก้ไข” เพื่อเปลี่ยนชื่อ ราคา หรือลบสินค้า ทุกอย่างบันทึกลง Google Sheets ทันที (ประวัติอยู่ในชีต <b>StockLog</b>)</p>
   </section>
 
   <!-- ใบเสร็จ -->
@@ -212,6 +213,24 @@
   </div>
 </div>
 
+<!-- เพิ่ม / แก้ไขสินค้า -->
+<div class="sheet-bg" id="prod-sheet">
+  <div class="sheet">
+    <h3><span id="prod-title">เพิ่มสินค้า</span> <button class="link" data-close="prod-sheet">ปิด</button></h3>
+    <div class="list">
+      <label class="field"><span>รหัสสินค้า (เว้นว่างไว้ ระบบจะสร้างให้ เช่น P007)</span><input id="pf-id" autocapitalize="characters" autocomplete="off"></label>
+      <label class="field"><span>ชื่อสินค้า</span><input id="pf-name" autocomplete="off"></label>
+      <label class="field"><span>ราคา (บาท)</span><input id="pf-price" type="number" inputmode="decimal" step="any" min="0"></label>
+      <label class="field" id="pf-stock-wrap"><span>จำนวนเริ่มต้น</span><input id="pf-stock" type="number" inputmode="numeric" min="0" placeholder="0"></label>
+    </div>
+    <p class="note" id="pf-note"></p>
+    <div class="btns">
+      <button class="btn ghost" id="pf-delete" style="color:var(--danger)">ลบสินค้า</button>
+      <button class="btn" id="pf-save">บันทึก</button>
+    </div>
+  </div>
+</div>
+
 <div id="print-area"></div>
 <div class="toast" id="toast"></div>
 
@@ -285,6 +304,24 @@
         const seqs = store.get('pos.demoSeq', {}); seqs[day] = (seqs[day] || 0) + 1; store.set('pos.demoSeq', seqs);
         return { ok: true, products: p, receipt: { receiptNo: `R${day}-${String(seqs[day]).padStart(4, '0')}`,
           datetime: now.toISOString(), items: lines, total, paid, change: r2(paid - total) } };
+      }
+      if (body.action === 'saveProduct') {
+        const name = String(body.name || '').trim(), price = Number(body.price);
+        if (!name) throw new Error('กรุณาใส่ชื่อสินค้า');
+        if (body.price === '' || !(price >= 0)) throw new Error('ราคาไม่ถูกต้อง');
+        let id = String(body.id || '').trim();
+        if (body.isNew) {
+          if (!id) id = 'P' + String(p.reduce((m, x) => { const k = /^P(\d+)$/.exec(x.id); return k ? Math.max(m, +k[1]) : m; }, 0) + 1).padStart(3, '0');
+          if (find(id)) throw new Error('รหัส ' + id + ' มีอยู่แล้ว');
+          p.push({ id, name, price: r2(price), stock: Math.max(0, Math.trunc(+body.stock || 0)) });
+        } else {
+          const x = find(id); if (!x) throw new Error('ไม่พบสินค้า'); x.name = name; x.price = r2(price);
+        }
+        store.set('pos.demoProducts', p); return { ok: true, id, products: p };
+      }
+      if (body.action === 'deleteProduct') {
+        const i = p.findIndex(x => x.id === String(body.id)); if (i < 0) throw new Error('ไม่พบสินค้า');
+        p.splice(i, 1); store.set('pos.demoProducts', p); return { ok: true, products: p };
       }
       throw new Error('unknown action');
     },
@@ -384,7 +421,8 @@
   function renderStock() {
     const list = filterList($('#search-stock').value);
     $('#stock-list').innerHTML = list.length ? list.map(p => `<div class="row">
-      <div class="grow"><div>${esc(p.name)}</div><div class="sub">${esc(p.id)} · ${money0(p.price)} · <button class="link" data-bulk="${esc(p.id)}">ปรับหลายชิ้น</button></div></div>
+      <div class="grow"><div>${esc(p.name)}</div><div class="sub">${esc(p.id)} · ${money0(p.price)}</div>
+        <div><button class="link" data-edit="${esc(p.id)}">แก้ไข</button> · <button class="link" data-bulk="${esc(p.id)}">ปรับหลายชิ้น</button></div></div>
       <div class="stepper"><button data-adj="${esc(p.id)}" data-d="-1">−</button><span class="val ${p.stock <= cfg.lowStock ? 'low' : ''}">${p.stock}</span><button data-adj="${esc(p.id)}" data-d="1">+</button></div></div>`).join('')
       : '<div class="empty">ไม่มีสินค้า</div>';
   }
@@ -647,7 +685,58 @@
     renderStock(); renderGrid();
   }
 
+  // ---------- เพิ่ม / แก้ไข / ลบสินค้า ----------
+  let editingId = null;
+  function openProductForm(id) {
+    editingId = id || null;
+    const p = id ? byId(id) : null;
+    $('#prod-title').textContent = p ? 'แก้ไขสินค้า' : 'เพิ่มสินค้า';
+    $('#pf-id').value = p ? p.id : ''; $('#pf-id').readOnly = !!p; $('#pf-id').style.opacity = p ? .5 : 1;
+    $('#pf-name').value = p ? p.name : '';
+    $('#pf-price').value = p ? p.price : '';
+    $('#pf-stock').value = '';
+    $('#pf-stock-wrap').style.display = p ? 'none' : '';
+    $('#pf-delete').style.display = p ? '' : 'none';
+    $('#pf-note').textContent = p ? `สต็อกตอนนี้ ${p.stock} ชิ้น · ปรับจำนวนด้วยปุ่ม − / + ในหน้าสต็อก (เพื่อให้มีประวัติใน StockLog)` : '';
+    openSheet('prod-sheet');
+    setTimeout(() => $(p ? '#pf-name' : '#pf-name').focus(), 50);
+  }
+
+  function applyProducts(list) {
+    products = list; store.set('pos.products', products);
+    for (const id in cart) if (!byId(id)) delete cart[id];
+    renderAll();
+  }
+
+  async function saveProduct() {
+    const body = { action: 'saveProduct', isNew: !editingId, id: $('#pf-id').value.trim(),
+      name: $('#pf-name').value.trim(), price: $('#pf-price').value, stock: $('#pf-stock').value };
+    if (!body.name) return toast('กรุณาใส่ชื่อสินค้า', true);
+    if (body.price === '' || +body.price < 0) return toast('กรุณาใส่ราคาให้ถูกต้อง', true);
+    const btn = $('#pf-save'); btn.disabled = true; btn.textContent = 'กำลังบันทึก…';
+    try {
+      const res = await apiPost(body);
+      applyProducts(res.products); closeSheet('prod-sheet');
+      toast(editingId ? 'แก้ไขแล้ว' : 'เพิ่มสินค้า ' + res.id + ' แล้ว');
+    } catch (e) { toast('บันทึกไม่สำเร็จ: ' + e.message, true); }
+    finally { btn.disabled = false; btn.textContent = 'บันทึก'; }
+  }
+
+  async function deleteProduct() {
+    const p = byId(editingId); if (!p) return;
+    if (!confirm(`ลบ "${p.name}" ออกจากรายการสินค้า?\nประวัติการขายเดิมยังอยู่ในชีตครบ`)) return;
+    const btn = $('#pf-delete'); btn.disabled = true;
+    try {
+      const res = await apiPost({ action: 'deleteProduct', id: p.id });
+      applyProducts(res.products); closeSheet('prod-sheet'); toast('ลบ ' + p.name + ' แล้ว');
+    } catch (e) { toast('ลบไม่สำเร็จ: ' + e.message, true); }
+    finally { btn.disabled = false; }
+  }
+
   // ---------- events ----------
+  $('#add-prod').addEventListener('click', () => openProductForm(null));
+  $('#pf-save').addEventListener('click', saveProduct);
+  $('#pf-delete').addEventListener('click', deleteProduct);
   $$('nav button').forEach(b => b.addEventListener('click', () => {
     $$('nav button').forEach(x => x.classList.toggle('active', x === b));
     $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + b.dataset.view));
@@ -669,6 +758,8 @@
   $('#stock-list').addEventListener('click', e => {
     const a = e.target.closest('[data-adj]');
     if (a) return adjustStock(a.dataset.adj, +a.dataset.d);
+    const ed = e.target.closest('[data-edit]');
+    if (ed) return openProductForm(ed.dataset.edit);
     const b = e.target.closest('[data-bulk]');
     if (b) {
       const p = byId(b.dataset.bulk);
